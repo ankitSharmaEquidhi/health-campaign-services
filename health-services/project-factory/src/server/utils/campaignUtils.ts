@@ -25,7 +25,7 @@ import {
   createAndUploadJsonFile,
   createBoundaryRelationship,
   getSheetData,
-  searchMDMS,
+  searchMDMS
 } from "../api/genericApis";
 import { getFormattedStringForDebug, logger } from "./logger";
 import createAndSearch from "../config/createAndSearch";
@@ -56,6 +56,7 @@ import {
   processTrackStatuses,
   processTrackTypes,
   resourceDataStatuses,
+  usageColumnStatus,
 } from "../config/constants";
 import { getBoundaryTabName } from "./boundaryUtils";
 import {
@@ -273,7 +274,7 @@ function enrichErrors(
           const activeCell = worksheet.getCell(
             `${createAndSearchConfig.activeColumn}${rowIndex}`
           );
-          activeCell.value = "Active";
+          activeCell.value = usageColumnStatus.active;
         }
       }
     });
@@ -300,8 +301,8 @@ function enrichActiveAndUUidColumn(
       const uniqueIdentifierCell = worksheet.getCell(
         `${createAndSearchConfig?.uniqueIdentifierColumn}${rowNumber}`
       );
-      activeCell.value = "Active";
-      uniqueIdentifierCell.value = data["userServiceUuid"];
+      activeCell.value = usageColumnStatus.active;
+      uniqueIdentifierCell.value = data["userServiceUuid"] || data?.user?.["userServiceUuid"];
     }
   }
 }
@@ -2205,8 +2206,7 @@ async function getCodesTarget(request: any, localizationMap?: any) {
             entry["Target at the Selected Boundary level"];
           if (
             Object.keys(entry["Parent Target at the Selected Boundary level"]).length > 0 &&
-            entry["Parent Target at the Selected Boundary level"] !==
-            entry["Target at the Selected Boundary level"]
+            !_.isEqual(entry["Parent Target at the Selected Boundary level"],entry["Target at the Selected Boundary level"])
           ) {
             boundaryCodesWhoseTargetsHasToBeUpdated.push(entry[codeColumnName]);
           }
@@ -2362,23 +2362,37 @@ async function createProject(
 
 const enrichTargetForProject = (project: any, codesTargetMapping: any, boundaryCode: any) => {
   if (codesTargetMapping?.[boundaryCode] && Object.keys(codesTargetMapping[boundaryCode]).length > 0) {
-    let targets = [];
-    for (const key in codesTargetMapping?.[boundaryCode]) {
-      let targetNo = parseInt(codesTargetMapping?.[boundaryCode][key]);
-      let beneficiaryType = key;
-      targets.push({
-        beneficiaryType: beneficiaryType,
-        targetNo: targetNo,
-      });
+    let targets: any[] = [];
+    const alreadyPresentTargets = project?.targets || [];
+
+    // Iterate through the mappings and update/create targets
+    for (const beneficiaryType in codesTargetMapping[boundaryCode]) {
+      const targetNo = parseInt(codesTargetMapping[boundaryCode][beneficiaryType], 10); // Ensure numeric conversion
+      updateOrAddTarget(alreadyPresentTargets, beneficiaryType, targetNo, targets);
     }
-    if(targets.length > 0){
+
+    // Update project targets if new/modified targets exist
+    if (targets.length > 0) {
       project.targets = targets;
     }
-  }
-  else{
+  } else {
     logger.info(`No targets found for boundary code ${boundaryCode}`);
   }
-}
+};
+
+// Helper function to update or add a target
+const updateOrAddTarget = (alreadyPresentTargets: any, beneficiaryType: string, targetNo: number, targets: any[]) => {
+  const existingTarget = alreadyPresentTargets.find((target: any) => target.beneficiaryType === beneficiaryType);
+
+  if (existingTarget) {
+    // Update existing target
+    existingTarget.targetNo = targetNo;
+    targets.push(existingTarget);
+  } else {
+    // Add new target
+    targets.push({ beneficiaryType, targetNo });
+  }
+};
 
 async function processAfterPersist(request: any, actionInUrl: any) {
   try {
@@ -3324,6 +3338,14 @@ const autoGenerateBoundaryCodes = async (
 function updateBoundaryData(boundaryData: any[], hierarchy: any[]): any[] {
   const map: Map<string, string> = new Map();
   const count: Map<string, number> = new Map();
+  
+  boundaryData = boundaryData.map(row =>
+    Object.fromEntries(
+      Object.entries(row).map(([key, value]) =>
+        [key, typeof value === "string" ? value.trim() : value]
+      )
+    )
+  );
 
   boundaryData.forEach((row) => {
     const keys = Object.keys(row).filter((key) => hierarchy.includes(key));
@@ -3717,7 +3739,7 @@ function createIdRequests(employees: any[]): any[] {
     return Array.from({ length: employees.length }, () => ({
       tenantId: tenantId,
       idName: config?.values?.idgen?.idNameForUserNameGeneration,
-      idFormat: config?.values?.idgen?.formatForUserName,
+      format: config?.values?.idgen?.formatForUserName,
     }));
   } else {
     return [];
@@ -3829,6 +3851,16 @@ async function updateCampaignAfterSearch(request: any, source = "MICROPLAN_FETCH
   } else {
     throwError("CAMPAIGN", 500, "CAMPAIGN_SEARCH_ERROR", "Error in campaign search");
   }
+}
+
+export function getBoundaryCodeAndBoundaryTypeMapping(boundaries : any, currentMapping : any = {}) {
+   for(const boundary of boundaries) {
+     currentMapping[boundary.code] = boundary.boundaryType;
+     if(boundary.children?.length > 0) {
+       getBoundaryCodeAndBoundaryTypeMapping(boundary.children, currentMapping);
+     }
+   }
+   return currentMapping;
 }
 
 export {
